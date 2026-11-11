@@ -1,7 +1,7 @@
 name: ripple
 version: 0.1.0
-description: "Incremental build system for agent work: versioned sources -> typed computations -> artifacts -> approvals bound to exact dependency revisions. A source change marks descendants and their approvals stale; a pre_tool_call hook refuses stale publication."
-author: NousResearch
+description: "Keeps Hermes work consistent when facts change: update a source value and every quote, report or check built on it turns stale, its approval is revoked, and publishing the old version is refused until it is rebuilt and re-approved by a human."
+author: sprmn24
 provides_tools:
   - ripple_put_source
   - ripple_derive
