@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from collections import deque
 from contextlib import contextmanager
@@ -105,6 +106,23 @@ def _display(value: Any) -> str:
         return str(value)
     if isinstance(value, str):
         return value
+    return json.dumps(value)
+
+
+def _summary_of(value: Any) -> str:
+    """Short human-readable rendering for pane rows and compact tool results."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        s = value
+        if s.lstrip().startswith("<") and ">" in s:
+            text = re.sub(r"<[^>]+>", " ", s)
+            s = " ".join(text.split())
+        return s if len(s) <= 80 else s[:77] + "…"
     return json.dumps(value)
 
 
@@ -271,6 +289,36 @@ class Store:
                 return sub + [node_id]
         return None
 
+    def stale_cause(self, node_id: str):
+        """(description, chain) for a stale node, or (None, None) if fresh.
+
+        ``description`` reads like ``"src/unit_price changed r1 -> r2"`` and
+        ``chain`` is the node-id path from the changed input down to ``node_id``.
+        """
+        node = self._node(node_id)
+        if node is None:
+            return None, None
+        for inp, pinned in self._edges(node_id):
+            inode = self._node(inp)
+            if inode is None:
+                return f"{inp} is missing", [inp, node_id]
+            if inode["revision"] != pinned:
+                return (
+                    f"{inp} changed r{pinned} -> r{inode['revision']}",
+                    [inp, node_id],
+                )
+            sub_desc, sub_chain = self.stale_cause(inp)
+            if sub_chain:
+                return sub_desc, sub_chain + [node_id]
+        return None, None
+
+    def _stale_message(self, node_id: str) -> Optional[str]:
+        """One-line human-readable cause path, or None if the node is fresh."""
+        desc, chain = self.stale_cause(node_id)
+        if not chain:
+            return None
+        return f"{node_id} is stale: {desc} -> " + " -> ".join(chain[1:])
+
     def _transitive_input_pins(self, node_id: str) -> dict:
         pins: dict = {}
         seen = {node_id}
@@ -353,7 +401,9 @@ class Store:
                 (node_id, KIND_SOURCE, new_rev, STATE_FRESH, None, value),
             )
             self._bump_and_invalidate(node_id)
-        return {"ok": True, "node_id": node_id, "revision": new_rev}
+            stale = self._descendants(node_id)
+        return {"ok": True, "node_id": node_id, "revision": new_rev,
+                "stale": stale}
 
     # -- derive -----------------------------------------------------------------
     def derive(self, node_id: str, kind: str, inputs: list, compute: str,
@@ -511,7 +561,8 @@ class Store:
                     (new_rev, STATE_FRESH, json.dumps(value), nid),
                 )
                 self._bump_and_invalidate(nid)
-                rebuilt.append({"node_id": nid, "revision": new_rev, "value": value})
+                rebuilt.append({"node_id": nid, "revision": new_rev,
+                                "value": value, "summary": _summary_of(value)})
         return {"ok": True, "rebuilt": rebuilt}
 
     # -- approvals (HUMAN-ONLY) ---------------------------------------------------
@@ -598,21 +649,36 @@ class Store:
         if node is None or node["revision"] == 0:
             return (
                 f"Refusing publish: {artifact_id!r} has no recorded revision. "
-                "Derive the artifact and have a human approve it first.",
+                "Derive the artifact and have a human approve it in the Ripple pane first.",
                 None,
+            )
+        if node["kind"] != KIND_ARTIFACT:
+            return (
+                f"Refusing publish: {artifact_id!r} is not an artifact "
+                f"(kind={node['kind']!r}).",
+                None,
+            )
+        # staleness first: give the cause path
+        if not self._is_fresh(artifact_id):
+            msg = self._stale_message(artifact_id) or (
+                f"Refusing publish: {artifact_id!r} is stale."
+            )
+            return (
+                msg + ". A human must re-approve in the Ripple pane after a rebuild.",
+                self.stale_cause(artifact_id)[1],
             )
         approval = self._approval(artifact_id)
         if approval is None:
             return (
                 f"Refusing publish: no human approval recorded for {artifact_id!r}. "
-                "Approve it in the Desktop pane first.",
+                "Approve it in the Ripple pane first.",
                 None,
             )
         if approval["revision"] != node["revision"]:
             return (
-                f"Stale publish refused: {artifact_id!r} was re-derived since "
-                f"approval (approved r{approval['revision']}, now r{node['revision']}). "
-                "Re-approve before publishing.",
+                f"Refusing publish: {artifact_id!r} was re-derived since approval "
+                f"(approved r{approval['revision']}, now r{node['revision']}). "
+                "A human must re-approve in the Ripple pane.",
                 [artifact_id],
             )
         for inp, rev in approval["inputs"].items():
@@ -620,16 +686,11 @@ class Store:
             if inode is None or inode["revision"] != rev:
                 chain = self._stale_chain(artifact_id) or [inp, artifact_id]
                 return (
-                    f"Stale publish refused: input {inp!r} changed since approval. "
-                    "Path: " + " -> ".join(chain),
+                    f"Refusing publish: approval-bound input {inp!r} changed since "
+                    "approval. A human must re-approve in the Ripple pane. Path: "
+                    + " -> ".join(chain),
                     chain,
                 )
-        if not self._is_fresh(artifact_id):
-            chain = self._stale_chain(artifact_id) or [artifact_id]
-            return (
-                "Stale publish refused. Path: " + " -> ".join(chain),
-                chain,
-            )
         return None
 
     def publish(self, artifact_id: str) -> dict:
@@ -721,30 +782,45 @@ class Store:
 
     # -- snapshot -------------------------------------------------------------------
     def graph(self) -> dict:
-        nodes = []
-        for r in self._conn.execute(
-            "SELECT node_id, kind, revision, state, recipe, value FROM ripple_nodes"
-        ).fetchall():
-            nodes.append({
-                "node_id": r[0],
-                "kind": r[1],
-                "revision": r[2],
-                "state": r[3],
-                "recipe": json.loads(r[4]) if r[4] else None,
-                "value": json.loads(r[5]) if r[5] is not None else None,
-            })
-        edges = [
-            {"dependent": r[0], "input": r[1], "pinned_revision": r[2]}
-            for r in self._conn.execute(
-                "SELECT dependent, input, pinned_revision FROM ripple_edges"
-            ).fetchall()
-        ]
         approvals = [
             {"artifact_id": r[0], "revision": r[1],
              "inputs": json.loads(r[2]), "approved_at": r[3]}
             for r in self._conn.execute(
                 "SELECT artifact_id, revision, inputs_json, approved_at "
                 "FROM ripple_approvals"
+            ).fetchall()
+        ]
+        approved_rev = {a["artifact_id"]: a["revision"] for a in approvals}
+
+        nodes = []
+        for r in self._conn.execute(
+            "SELECT node_id, kind, revision, state, recipe, value FROM ripple_nodes"
+        ).fetchall():
+            node_id, kind, revision, state = r[0], r[1], r[2], r[3]
+            value = json.loads(r[5]) if r[5] is not None else None
+            cause = None
+            cause_path = None
+            if state == STATE_STALE:
+                cause, cause_path = self.stale_cause(node_id)
+            nodes.append({
+                "node_id": node_id,
+                "kind": kind,
+                "revision": revision,
+                "state": state,
+                "recipe": json.loads(r[4]) if r[4] else None,
+                "value": value,
+                "summary": _summary_of(value),
+                "fresh": self._is_fresh(node_id),
+                "cause": cause,
+                "cause_path": cause_path,
+                "approved_revision": (
+                    approved_rev.get(node_id) if kind == KIND_ARTIFACT else None
+                ),
+            })
+        edges = [
+            {"dependent": r[0], "input": r[1], "pinned_revision": r[2]}
+            for r in self._conn.execute(
+                "SELECT dependent, input, pinned_revision FROM ripple_edges"
             ).fetchall()
         ]
         return {

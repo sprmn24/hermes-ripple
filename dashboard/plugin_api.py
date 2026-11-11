@@ -74,6 +74,6 @@ def approve(payload: dict = Body(...)):
 @router.post("/demo/reset")
 def demo_reset():
     try:
-        return demo.load_demo(_store(), publish=True)
+        return demo.load_demo(_store(), publish=False, approve=False)
     except engine.RippleError as exc:
         raise _http_error(exc, 409)

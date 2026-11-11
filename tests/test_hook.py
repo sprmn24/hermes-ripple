@@ -36,7 +36,9 @@ def test_hook_blocks_stale_with_cause_path(monkeypatch, store):
     monkeypatch.setattr(engine, "get_store", lambda: store)
     res = pre_tool_call("ripple_publish", {"artifact_id": QUOTE_HTML})
     assert res["action"] == "block"
-    assert "Stale" in res["message"] or "approval" in res["message"]
+    assert "stale" in res["message"]
+    assert "src/unit_price" in res["message"]
+    assert "Ripple pane" in res["message"]
 
 
 def test_hook_ignores_other_tools():

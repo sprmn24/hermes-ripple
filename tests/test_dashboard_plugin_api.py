@@ -53,3 +53,48 @@ def test_host_loaded_store_returns_store_not_function(monkeypatch, tmp_path):
     # The route handler must return a graph, not raise AttributeError.
     graph = module.get_graph()
     assert set(graph) >= {"nodes", "edges", "approvals", "releases"}
+
+
+def test_rest_get_graph_includes_pane_fields(monkeypatch, tmp_path):
+    monkeypatch.setenv("RIPPLE_DB", str(tmp_path / "ripple.db"))
+    monkeypatch.setenv("RIPPLE_RELEASES_DIR", str(tmp_path / "releases"))
+    module = _load_host_style()
+    module.demo_reset()
+    graph = module.get_graph()
+    assert graph["nodes"]
+    for node in graph["nodes"]:
+        assert "summary" in node
+        assert "fresh" in node
+        assert "cause_path" in node
+        assert "approved_revision" in node
+
+
+def test_rest_demo_reset_is_unapproved(monkeypatch, tmp_path):
+    monkeypatch.setenv("RIPPLE_DB", str(tmp_path / "ripple.db"))
+    monkeypatch.setenv("RIPPLE_RELEASES_DIR", str(tmp_path / "releases"))
+    module = _load_host_style()
+    graph = module.demo_reset()
+    by = {n["node_id"]: n for n in graph["nodes"]}
+    assert by["quote.html"]["fresh"] is True
+    assert by["quote.html"]["approved_revision"] is None
+    assert by["budget.html"]["approved_revision"] is None
+    assert graph["releases"] == []
+
+
+def test_rest_approve_fresh_then_stale(monkeypatch, tmp_path):
+    monkeypatch.setenv("RIPPLE_DB", str(tmp_path / "ripple.db"))
+    monkeypatch.setenv("RIPPLE_RELEASES_DIR", str(tmp_path / "releases"))
+    module = _load_host_style()
+    module.demo_reset()
+    store = module._store()
+    ok = module.approve(
+        {"artifact_id": "quote.html", "revision": store._revision("quote.html")}
+    )
+    assert ok["ok"] is True
+    store.put_source("src/unit_price", 15)
+    with pytest.raises(module.HTTPException) as exc:
+        module.approve(
+            {"artifact_id": "quote.html", "revision": store._revision("quote.html")}
+        )
+    assert exc.value.status_code == 409
+    assert exc.value.detail["error"] == "E_STALE"

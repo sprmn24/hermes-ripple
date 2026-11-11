@@ -26,6 +26,28 @@ def _ok(payload: dict) -> str:
     return json.dumps(payload)
 
 
+def _compact_node(node: dict) -> dict:
+    """Trim a graph node for agent tool output: artifact HTML bodies become a
+    short summary, and recipe/edge bookkeeping is dropped."""
+    value = node["summary"] if node["kind"] == engine.KIND_ARTIFACT else node["value"]
+    return {
+        "node_id": node["node_id"],
+        "kind": node["kind"],
+        "revision": node["revision"],
+        "state": node["state"],
+        "value": value,
+        "fresh": node["fresh"],
+        "cause": node["cause"],
+        "approved_revision": node["approved_revision"],
+    }
+
+
+def _trim_value(value):
+    if isinstance(value, str) and len(value) > 120:
+        return engine._summary_of(value)
+    return value
+
+
 def handle_put_source(args: dict, **_kw) -> str:
     try:
         result = engine.get_store().put_source(args["node_id"], args["content"])
@@ -59,6 +81,10 @@ def handle_impact(args: dict, **_kw) -> str:
 def handle_rebuild(_args: dict, **_kw) -> str:
     try:
         result = engine.get_store().rebuild()
+        result["rebuilt"] = [
+            {**entry, "value": _trim_value(entry["value"])}
+            for entry in result["rebuilt"]
+        ]
     except engine.RippleError as exc:
         return _err(exc)
     return _ok(result)
@@ -75,6 +101,7 @@ def handle_publish(args: dict, **_kw) -> str:
 def handle_graph(_args: dict, **_kw) -> str:
     try:
         result = engine.get_store().graph()
+        result["nodes"] = [_compact_node(n) for n in result["nodes"]]
     except engine.RippleError as exc:
         return _err(exc)
     return _ok(result)

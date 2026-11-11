@@ -40,9 +40,13 @@ _BUDGET_TEMPLATE = (
 )
 
 
-def load_demo(store: "engine.Store", publish: bool = True) -> dict:
-    """Reset the store and load the supplier fixture, approving and (optionally)
-    publishing both artifacts. Returns the graph snapshot."""
+def load_demo(store: "engine.Store", publish: bool = True,
+              approve: bool = True) -> dict:
+    """Reset the store and load the supplier fixture, then (by default) have
+    the human approve and publish both artifacts. With ``approve=False`` the
+    artifacts stay fresh-but-unapproved so the Desktop pane starts from a clean
+    slate awaiting a human approval; with ``publish=False`` nothing is released.
+    Returns the graph snapshot."""
     store.reset_all()
     store.put_source(SRC_UNIT_PRICE, UNIT_PRICE)
     store.put_source(SRC_QUANTITY, QUANTITY)
@@ -58,8 +62,9 @@ def load_demo(store: "engine.Store", publish: bool = True) -> dict:
                  [BUDGET_CHECK, QUOTE_TOTAL, SRC_BUDGET], "render_html",
                  params={"template": _BUDGET_TEMPLATE})
 
-    store.approve(QUOTE_HTML, store._revision(QUOTE_HTML))
-    store.approve(BUDGET_HTML, store._revision(BUDGET_HTML))
+    if approve:
+        store.approve(QUOTE_HTML, store._revision(QUOTE_HTML))
+        store.approve(BUDGET_HTML, store._revision(BUDGET_HTML))
     if publish:
         store.publish(QUOTE_HTML)
         store.publish(BUDGET_HTML)
