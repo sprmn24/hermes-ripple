@@ -1,0 +1,13 @@
+name: ripple
+version: 0.1.0
+description: "Incremental build system for agent work: versioned sources -> typed computations -> artifacts -> approvals bound to exact dependency revisions. A source change marks descendants and their approvals stale; a pre_tool_call hook refuses stale publication."
+author: NousResearch
+provides_tools:
+  - ripple_put_source
+  - ripple_derive
+  - ripple_impact
+  - ripple_rebuild
+  - ripple_publish
+  - ripple_graph
+provides_hooks:
+  - pre_tool_call
